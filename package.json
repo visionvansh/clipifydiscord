@@ -1,16 +1,19 @@
 {
-  "name": "clipify-discord-bot",
+  "name": "clipify-api",
   "version": "1.0.0",
-  "main": "bot.js",
+  "description": "Clipify API",
   "scripts": {
-    "start": "node bot.js"
+    "build": "npx prisma generate && next build",
+    "start": "next start",
+    "dev": "next dev"
   },
   "dependencies": {
-    "discord.js": "^14.16.3",
-    "express": "^4.21.1",
-    "cors": "^2.8.5"
+    "@prisma/client": "^5.15.0",
+    "axios": "^1.7.2",
+    "@clerk/nextjs": "^5.0.0",
+    "next": "^14.2.3"
   },
-  "engines": {
-    "node": "18.x"
+  "devDependencies": {
+    "prisma": "^5.15.0"
   }
 }

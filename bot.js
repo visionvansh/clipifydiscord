@@ -1,5 +1,6 @@
 import { Client, GatewayIntentBits } from 'discord.js';
 import { PrismaClient } from '@prisma/client';
+import axios from 'axios';
 
 const prisma = new PrismaClient();
 const client = new Client({
@@ -98,6 +99,8 @@ client.on('guildMemberAdd', async (member) => {
           discordUsername: member.user.username,
           discordEmail,
           signedUpToWebsite: false,
+          invitedId: inviteLink.studentId,
+          inviteCode: usedInvite.code,
         },
         create: {
           id: tempStudentId,
@@ -107,6 +110,8 @@ client.on('guildMemberAdd', async (member) => {
           discordUsername: member.user.username,
           discordEmail,
           signedUpToWebsite: false,
+          invitedId: inviteLink.studentId,
+          inviteCode: usedInvite.code,
         },
       });
       console.log(`Created/updated temp student for ${member.user.tag}: ${tempStudentId}`);
@@ -142,6 +147,19 @@ client.on('guildMemberAdd', async (member) => {
     } catch (trackingError) {
       console.error(`Invite tracking creation failed for ${member.user.tag}:`, trackingError);
       return;
+    }
+
+    // Send thread message to inviter's private thread
+    if (inviteLink.threadId) {
+      try {
+        await axios.post(`${process.env.DISCORD_BOT_API_URL}/send-thread-message`, {
+          threadId: inviteLink.threadId,
+          content: `${member.user.username} joined server by your invite code`,
+        });
+        console.log(`Sent thread message to ${inviteLink.threadId} for ${member.user.tag}`);
+      } catch (error) {
+        console.error(`Failed to send thread message for ${member.user.tag}:`, error);
+      }
     }
 
     // Update invite cache

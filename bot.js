@@ -10,31 +10,56 @@ const client = new Client({
   ],
 });
 
-client.once('ready', () => {
+client.once('ready', async () => {
   console.log(`Logged in as ${client.user?.tag}`);
   client.invites = new Map();
-  client.guilds.cache.forEach(async (guild) => {
+  for (const guild of client.guilds.cache.values()) {
     try {
       const invites = await guild.invites.fetch();
-      client.invites.set(guild.id, invites);
+      client.invites.set(guild.id, new Map(invites.map((invite) => [invite.code, invite])));
+      console.log(`Fetched ${invites.size} invites for guild ${guild.id}`);
     } catch (error) {
       console.error(`Failed to fetch invites for guild ${guild.id}:`, error);
     }
-  });
+  }
 });
 
 client.on('guildMemberAdd', async (member) => {
   try {
     const guild = member.guild;
-    const newInvites = await guild.invites.fetch();
+    console.log(`Member ${member.user.tag} joined guild ${guild.id}`);
+
+    // Fetch fresh invites
+    let newInvites;
+    try {
+      newInvites = await guild.invites.fetch();
+      console.log(`Fetched ${newInvites.size} invites for guild ${guild.id}`);
+    } catch (error) {
+      console.error(`Failed to fetch invites for guild ${guild.id}:`, error);
+      return;
+    }
+
     const oldInvites = client.invites.get(guild.id) || new Map();
     let usedInvite = null;
 
+    // Check for used invite
     for (const [code, invite] of newInvites) {
       const oldInvite = oldInvites.get(code);
       if (!oldInvite || invite.uses > oldInvite.uses) {
         usedInvite = invite;
+        console.log(`Detected used invite: ${code}, uses: ${invite.uses}`);
         break;
+      }
+    }
+
+    // Fallback: Check if any invite matches
+    if (!usedInvite) {
+      for (const [code, invite] of newInvites) {
+        if (invite.uses > 0) {
+          usedInvite = invite;
+          console.log(`Fallback: Using invite ${code} with ${invite.uses} uses`);
+          break;
+        }
       }
     }
 
@@ -45,6 +70,7 @@ client.on('guildMemberAdd', async (member) => {
 
     console.log(`Member ${member.user.tag} joined using invite ${usedInvite.code}`);
 
+    // Find InviteLink in DB
     const inviteLink = await prisma.inviteLink.findFirst({
       where: { inviteCode: usedInvite.code },
       include: { student: true },
@@ -55,13 +81,22 @@ client.on('guildMemberAdd', async (member) => {
       return;
     }
 
+    // Fetch email (if available)
+    let discordEmail = null;
+    try {
+      const user = await member.user.fetch();
+      discordEmail = user.email || null;
+    } catch (error) {
+      console.warn(`Failed to fetch email for ${member.user.tag}:`, error);
+    }
+
     const tempStudentId = `temp_${member.id}`;
     try {
       await prisma.student.upsert({
         where: { discordId: member.id },
         update: {
           discordUsername: member.user.username,
-          discordEmail: null,
+          discordEmail,
           signedUpToWebsite: false,
         },
         create: {
@@ -70,7 +105,7 @@ client.on('guildMemberAdd', async (member) => {
           email: `temp_${member.id}@example.com`,
           discordId: member.id,
           discordUsername: member.user.username,
-          discordEmail: null,
+          discordEmail,
           signedUpToWebsite: false,
         },
       });
@@ -109,7 +144,8 @@ client.on('guildMemberAdd', async (member) => {
       return;
     }
 
-    client.invites.set(guild.id, newInvites);
+    // Update invite cache
+    client.invites.set(guild.id, new Map(newInvites.map((invite) => [invite.code, invite])));
   } catch (error) {
     console.error(`Error in guildMemberAdd for ${member.user.tag}:`, error);
   }

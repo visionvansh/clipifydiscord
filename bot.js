@@ -1,172 +1,122 @@
-import { Client, GatewayIntentBits } from 'discord.js';
-import { PrismaClient } from '@prisma/client';
-import axios from 'axios';
+const { Client, GatewayIntentBits } = require('discord.js');
+const axios = require('axios');
+require('dotenv').config();
 
-const prisma = new PrismaClient();
-const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.GuildInvites,
-  ],
-});
+let DiscordClient = null;
+const inviteCache = new Map();
+const processedMembers = new Set();
 
-client.once('ready', async () => {
-  console.log(`Logged in as ${client.user?.tag}`);
-  client.invites = new Map();
-  for (const guild of client.guilds.cache.values()) {
-    try {
-      const invites = await guild.invites.fetch();
-      client.invites.set(guild.id, new Map(invites.map((invite) => [invite.code, invite])));
-      console.log(`Fetched ${invites.size} invites for guild ${guild.id}`);
-    } catch (error) {
-      console.error(`Failed to fetch invites for guild ${guild.id}:`, error);
-    }
+async function initializeDiscordClient() {
+  if (DiscordClient) {
+    console.log('Discord client already initialized');
+    return;
   }
-});
 
-client.on('guildMemberAdd', async (member) => {
   try {
-    const guild = member.guild;
-    console.log(`Member ${member.user.tag} joined guild ${guild.id}`);
-
-    // Fetch fresh invites
-    let newInvites;
-    try {
-      newInvites = await guild.invites.fetch();
-      console.log(`Fetched ${newInvites.size} invites for guild ${guild.id}`);
-    } catch (error) {
-      console.error(`Failed to fetch invites for guild ${guild.id}:`, error);
-      return;
-    }
-
-    const oldInvites = client.invites.get(guild.id) || new Map();
-    let usedInvite = null;
-
-    // Check for used invite
-    for (const [code, invite] of newInvites) {
-      const oldInvite = oldInvites.get(code);
-      if (!oldInvite || invite.uses > oldInvite.uses) {
-        usedInvite = invite;
-        console.log(`Detected used invite: ${code}, uses: ${invite.uses}`);
-        break;
-      }
-    }
-
-    // Fallback: Check if any invite matches
-    if (!usedInvite) {
-      for (const [code, invite] of newInvites) {
-        if (invite.uses > 0) {
-          usedInvite = invite;
-          console.log(`Fallback: Using invite ${code} with ${invite.uses} uses`);
-          break;
-        }
-      }
-    }
-
-    if (!usedInvite) {
-      console.log(`No invite found for member: ${member.user.tag}`);
-      return;
-    }
-
-    console.log(`Member ${member.user.tag} joined using invite ${usedInvite.code}`);
-
-    // Find InviteLink in DB
-    const inviteLink = await prisma.inviteLink.findFirst({
-      where: { inviteCode: usedInvite.code },
-      include: { student: true },
+    DiscordClient = new Client({
+      intents: [
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.MessageContent,
+        GatewayIntentBits.GuildInvites,
+        GatewayIntentBits.GuildMembers,
+      ],
     });
 
-    if (!inviteLink) {
-      console.log(`No invite link found for code ${usedInvite.code}`);
-      return;
-    }
+    DiscordClient.on('error', (error) => {
+      console.error('Discord client error:', error);
+    });
 
-    // Fetch email (if available)
-    let discordEmail = null;
-    try {
-      const user = await member.user.fetch();
-      discordEmail = user.email || null;
-    } catch (error) {
-      console.warn(`Failed to fetch email for ${member.user.tag}:`, error);
-    }
+    DiscordClient.on('warn', (info) => {
+      console.warn('Discord client warning:', info);
+    });
 
-    const tempStudentId = `temp_${member.id}`;
-    try {
-      await prisma.student.upsert({
-        where: { discordId: member.id },
-        update: {
-          discordUsername: member.user.username,
-          discordEmail,
-          signedUpToWebsite: false,
-          invitedId: inviteLink.studentId,
-          inviteCode: usedInvite.code,
-        },
-        create: {
-          id: tempStudentId,
-          username: `temp_${member.user.username}`,
-          email: `temp_${member.id}@example.com`,
-          discordId: member.id,
-          discordUsername: member.user.username,
-          discordEmail,
-          signedUpToWebsite: false,
-          invitedId: inviteLink.studentId,
-          inviteCode: usedInvite.code,
-        },
-      });
-      console.log(`Created/updated temp student for ${member.user.tag}: ${tempStudentId}`);
-    } catch (studentError) {
-      console.error(`Student creation failed for ${member.user.tag}:`, studentError);
-      return;
-    }
+    await DiscordClient.login(process.env.DISCORD_BOT_TOKEN);
+    console.log('Discord client initialized successfully');
 
-    try {
-      await prisma.invite.create({
-        data: {
-          inviterId: inviteLink.studentId,
-          invitedId: tempStudentId,
-          invitedUsername: member.user.username,
-          status: 'pending',
-        },
-      });
-      console.log(`Created invite for ${member.user.tag} by ${inviteLink.studentId}`);
-    } catch (inviteError) {
-      console.error(`Invite creation failed for ${member.user.tag}:`, inviteError);
-      return;
-    }
+    const guildId = process.env.DISCORD_GUILD_ID;
+    const guild = await DiscordClient.guilds.fetch(guildId);
+    const invites = await guild.invites.fetch();
+    invites.forEach((invite) => {
+      inviteCache.set(invite.code, invite.uses || 0);
+    });
+    console.log('Cached invites:', Array.from(inviteCache.entries()));
 
-    try {
-      await prisma.inviteTracking.create({
-        data: {
-          inviterId: inviteLink.studentId,
-          invitedId: member.id,
-          invitedUsername: member.user.username,
-        },
-      });
-      console.log(`Created invite tracking for ${member.user.tag}`);
-    } catch (trackingError) {
-      console.error(`Invite tracking creation failed for ${member.user.tag}:`, trackingError);
-      return;
-    }
-
-    // Send thread message to inviter's private thread
-    if (inviteLink.threadId) {
+    DiscordClient.on('guildMemberAdd', async (member) => {
       try {
-        await axios.post(`${process.env.DISCORD_BOT_API_URL}/send-thread-message`, {
-          threadId: inviteLink.threadId,
-          content: `${member.user.username} joined server by your invite code`,
-        });
-        console.log(`Sent thread message to ${inviteLink.threadId} for ${member.user.tag}`);
+        console.log(`guildMemberAdd: ${member.id}, Username: ${member.user.username}`);
+
+        if (processedMembers.has(member.id)) {
+          console.log(`Member ${member.id} already processed, allowing rejoin`);
+          processedMembers.delete(member.id);
+        }
+        processedMembers.add(member.id);
+
+        const guild = member.guild;
+        const channelId = process.env.DISCORD_TEXT_CHANNEL_ID;
+        const channel = await guild.channels.fetch(channelId);
+        if (!channel || !channel.isTextBased()) {
+          console.error('Invalid text channel:', channelId);
+          return;
+        }
+
+        const newInvites = await guild.invites.fetch();
+        let usedInvite = null;
+        for (const invite of newInvites.values()) {
+          const cachedUses = inviteCache.get(invite.code) || 0;
+          if ((invite.uses || 0) > cachedUses) {
+            usedInvite = invite;
+            inviteCache.set(invite.code, invite.uses || 0);
+            break;
+          }
+        }
+
+        if (!usedInvite) {
+          console.warn('No used invite detected for member:', member.id);
+        }
+
+        let welcomeMessage = `Welcome ${member.user.tag} to ${guild.name}!`;
+        if (usedInvite) {
+          console.log(`Used invite: ${usedInvite.code}, Uses: ${usedInvite.uses}`);
+          welcomeMessage += ` Joined via invite code ${usedInvite.code}.`;
+        } else {
+          welcomeMessage += ' No invite details available.';
+        }
+
+        await channel.send(welcomeMessage);
+        console.log(`Sent welcome message for ${member.user.tag}`);
+
+        await axios.post(
+          `${process.env.VERCEL_API_URL}/api/update-students`,
+          {
+            discordId: member.id,
+            username: member.user.username,
+            inviteCode: usedInvite ? usedInvite.code : null,
+          },
+          {
+            headers: {
+              'Authorization': `Bearer ${process.env.API_KEY}`,
+              'Content-Type': 'application/json',
+            },
+          }
+        );
+        console.log('Called Vercel API to update student and invite');
       } catch (error) {
-        console.error(`Failed to send thread message for ${member.user.tag}:`, error);
+        console.error('Error in guildMemberAdd:', error);
       }
-    }
+    });
 
-    // Update invite cache
-    client.invites.set(guild.id, new Map(newInvites.map((invite) => [invite.code, invite])));
+    DiscordClient.on('threadCreate', async (thread) => {
+      try {
+        console.log(`Thread created: ${thread.id}, name: ${thread.name}`);
+      } catch (error) {
+        console.error('Error handling threadCreate event:', error);
+      }
+    });
   } catch (error) {
-    console.error(`Error in guildMemberAdd for ${member.user.tag}:`, error);
+    console.error('Failed to initialize Discord client:', error);
+    DiscordClient = null;
   }
-});
+}
 
-client.login(process.env.DISCORD_BOT_TOKEN);
+initializeDiscordClient();

@@ -1,5 +1,6 @@
 const express = require('express');
 const { REST } = require('discord.js');
+const { getDiscordClient } = require('./discordClient');
 require('dotenv').config();
 
 const app = express();
@@ -10,6 +11,11 @@ const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_BOT_TOKEN)
 app.post('/generate-invite', async (req, res) => {
   const { discordId, discordUsername } = req.body;
   try {
+    const DiscordClient = getDiscordClient();
+    if (!DiscordClient) {
+      return res.status(500).json({ error: 'Discord client not initialized' });
+    }
+
     const guildId = process.env.DISCORD_GUILD_ID;
     const channelId = process.env.DISCORD_TEXT_CHANNEL_ID;
     const guild = await DiscordClient.guilds.fetch(guildId);

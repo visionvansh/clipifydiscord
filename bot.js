@@ -71,17 +71,34 @@ async function setupBot() {
           }
         }
 
-        let welcomeMessage = `Welcome ${member.user.tag} to ${guild.name}!`;
-        if (usedInvite) {
-          console.log(`Used invite: ${usedInvite.code}, Uses: ${usedInvite.uses}`);
-          welcomeMessage += ` Joined via invite code ${usedInvite.code}.`;
-        } else {
-          console.warn('No used invite detected for member:', member.id);
-          welcomeMessage += ' No invite details available.';
-        }
+        // NEW: Inviter ke thread mein message bhejo agar invite use hua
+        if (usedInvite && usedInvite.inviterId) {
+          try {
+            // Vercel se inviter ka thread ID fetch karo
+            const response = await axios.get(
+              `${process.env.VERCEL_API_URL}/api/invite-link?inviteCode=${usedInvite.code}`,
+              {
+                headers: {
+                  'Authorization': `Bearer ${process.env.API_KEY}`,
+                  'Content-Type': 'application/json',
+                },
+              }
+            );
+            const { threadId, discordUsername: inviterUsername } = response.data;
 
-        await channel.send(welcomeMessage);
-        console.log(`Sent welcome message for ${member.user.tag}`);
+            if (threadId) {
+              const thread = await guild.channels.fetch(threadId);
+              if (thread && thread.isThread()) {
+                await thread.send(`${member.user.username} joined server and invited by you`);
+                console.log(`Sent invite notification to thread ${threadId} for inviter ${inviterUsername}`);
+              } else {
+                console.warn(`Thread ${threadId} not found or not a thread for inviter ${inviterUsername}`);
+              }
+            }
+          } catch (error) {
+            console.error('Error sending invite notification to inviter thread:', error);
+          }
+        }
 
         // Vercel ke /api/update-students ko call karo
         await axios.post(
